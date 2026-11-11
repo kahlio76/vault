@@ -1,0 +1,1208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Vault</title>
+<link rel="stylesheet" href="res/katex/katex.min.css">
+<style>
+/* One-screen shell. Left: a looping wheel of the current folder. Right: the open note. Bottom: a prompt. */
+:root {
+  --bg: #000000; --panel: #0A0A0A; --line: #2E2E2E;
+  --fg: #FFFFFF; --dim: #8C8C8C;
+  --accent: #FFFFFF; --brass: #B8B8B8; --ok: #B8B8B8;
+  --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --step--1: 0.8125rem; --step-0: 0.9375rem; --step-1: 1.125rem; --step-2: clamp(1.75rem, 4vw, 2.5rem);
+  color-scheme: dark;
+}
+:root[data-skin="ember"]     { --bg:#060504; --panel:#0D0B09; --line:#2A241D; --fg:#EFE5D0; --dim:#8F8370; --accent:#E0694F; --brass:#C8954D; --ok:#9DB27A; color-scheme: dark; }
+:root[data-skin="bistre"]    { --bg:#1C1815; --panel:#24201B; --line:#3A332B; --fg:#EFE5D0; --dim:#A39680; --accent:#E0694F; --brass:#C8954D; --ok:#9DB27A; color-scheme: dark; }
+:root[data-skin="phosphor"]  { --bg:#030604; --panel:#08100A; --line:#18301F; --fg:#B7F5C0; --dim:#5E9468; --accent:#4DFF88; --brass:#D6E36A; --ok:#4DFF88; color-scheme: dark; }
+:root[data-skin="parchment"] { --bg:#EFE5D0; --panel:#E6DAC0; --line:#CDBE9E; --fg:#1C1815; --dim:#6B5F4E; --accent:#9A2D1F; --brass:#8A6220; --ok:#4F6B2E; color-scheme: light; }
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font-family: var(--mono); font-size: var(--step-0); line-height: 1.6; overflow: hidden; -webkit-font-smoothing: antialiased; }
+a { color: var(--fg); text-underline-offset: 3px; }
+a:hover { color: var(--accent); }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+::selection { background: var(--fg); color: var(--bg); }
+
+.app { height: 100%; padding-inline: 16px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.6rem; padding-block: 0.55rem; border-bottom: 1px solid var(--line); font-size: var(--step--1); min-height: 2.4rem; }
+.top .host { color: var(--brass); font-weight: 700; }
+.crumbs { display: flex; flex-wrap: wrap; gap: 0.1rem 0.4rem; min-width: 0; color: var(--dim); }
+.crumbs button { background: none; border: 0; padding: 0; cursor: pointer; color: var(--dim); max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumbs button:hover, .crumbs button:last-child { color: var(--fg); }
+.crumbs i { font-style: normal; color: var(--line); }
+.top .count { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; }
+.shell { position: relative; display: grid; grid-template-columns: 17rem minmax(0, 1fr); min-height: 0; }
+
+/* wheel */
+.tree { position: relative; overflow: hidden; border-right: 1px solid var(--line); cursor: ns-resize; user-select: none; touch-action: none; }
+.tree button {
+  position: absolute; top: 50%; left: 0; width: 12rem; height: 3.5rem; margin-top: -1.75rem;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: center; gap: 0 0.5rem; text-align: left;
+  padding: 0.4rem 0.7rem; border: 1px solid var(--line); background: var(--panel); color: var(--dim); cursor: pointer;
+  transform-origin: left center;
+  transform: translate(var(--x, 0px), var(--y, 0px)) rotate(var(--r, 0deg)) scale(var(--s, 1));
+  opacity: var(--o, 1);
+  transition: transform 0.4s cubic-bezier(.2,.8,.2,1), opacity 0.4s;
+}
+.tree button:hover { color: var(--fg); }
+.tree button.on { color: var(--bg); background: var(--accent); border-color: var(--accent); z-index: 2; font-weight: 700; }
+.tree button .n { grid-column: 1 / -1; font-size: 0.68rem; color: var(--line); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree button.on .n, .tree button.on .t { color: var(--bg); }
+.tree button .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--step--1); }
+.tree button .t { align-self: center; color: var(--dim); font-size: 0.72rem; white-space: nowrap; }
+.tree button.up { border-style: dashed; }
+.tree .hint { position: absolute; left: 0; bottom: 0.6rem; color: var(--dim); font-size: 0.72rem; }
+@keyframes pop { from { opacity: 0; } }
+.tree button.enter { animation: pop 0.3s both; }
+
+/* eye + sight lines */
+.eye { display: none; position: absolute; right: 0; top: 1rem; margin: 0; font: 700 9px/1 var(--mono); color: var(--line); pointer-events: none; z-index: 3; }
+.eye .i { color: var(--dim); } .eye .p { color: var(--accent); }
+@media (min-width: 1240px) { .eye { display: block; } }
+.gaze { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 20; }
+.wait { display: none !important; }
+
+/* pane */
+.main { overflow-y: auto; min-width: 0; padding: 1.25rem 0 3rem 2rem; }
+.pane { max-width: 50rem; display: flex; flex-direction: column; gap: 0.9rem; }
+.prompt { color: var(--dim); margin: 0; overflow-wrap: anywhere; }
+.prompt .u { color: var(--ok); } .prompt .c { color: var(--fg); font-weight: 500; } .prompt .s { color: var(--accent); }
+.row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.btn { border: 1px solid var(--line); background: var(--panel); color: var(--fg); font-size: var(--step--1); padding: 0.3rem 0.7rem; cursor: pointer; text-decoration: none; }
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.meta { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.15rem 1.1rem; font-size: var(--step--1); }
+.meta dt { color: var(--brass); } .meta dd { margin: 0; color: var(--dim); overflow-wrap: anywhere; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.3rem; font-size: 0.72rem; color: var(--dim); }
+.chips span { border: 1px solid var(--line); padding: 0 0.4rem; }
+.note { color: var(--dim); font-size: var(--step--1); margin: 0; }
+.pager { justify-content: space-between; margin-top: 0.75rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+
+/* rendered markdown */
+.doc { overflow-wrap: anywhere; }
+.doc > * + * { margin-top: 0.85rem; }
+.doc h1 { font-size: var(--step-2); line-height: 1.1; letter-spacing: -0.02em; margin: 0.4rem 0 0; text-wrap: balance; }
+.doc h2, .doc h3, .doc h4, .doc h5, .doc h6 { margin: 1.6rem 0 0; line-height: 1.25; }
+.doc h2 { font-size: var(--step-1); } .doc h3 { font-size: var(--step-0); } .doc h4, .doc h5, .doc h6 { font-size: var(--step--1); color: var(--dim); }
+.doc h2::before { content: "## "; color: var(--dim); font-weight: 400; }
+.doc h3::before { content: "### "; color: var(--dim); font-weight: 400; }
+.doc p, .doc li { max-width: 68ch; }
+.doc ul, .doc ol { margin: 0; padding-left: 1.3rem; display: grid; gap: 0.25rem; }
+.doc li::marker { color: var(--dim); }
+.doc li.task { list-style: none; margin-left: -1.3rem; }
+.doc .box { color: var(--dim); }
+.doc a { text-decoration: underline; text-decoration-color: var(--dim); }
+.doc a.wl { text-decoration-style: dotted; }
+.doc .wl.missing, .doc .missing { color: var(--dim); text-decoration: line-through; text-decoration-color: var(--line); }
+.doc code { background: var(--panel); border: 1px solid var(--line); padding: 0 0.3em; font-size: 0.92em; }
+.doc pre { margin: 0; padding: 0.8rem 1rem; background: var(--panel); border: 1px solid var(--line); overflow-x: auto; position: relative; }
+.doc pre code { background: none; border: 0; padding: 0; font-size: var(--step--1); line-height: 1.55; }
+.doc pre code[data-lang]::before { content: attr(data-lang); position: absolute; right: 0.6rem; top: 0.3rem; font-size: 0.68rem; color: var(--dim); }
+.doc .math-block { overflow-x: auto; padding: 0.3rem 0; }
+.doc .katex-display { margin: 0.2rem 0; }
+.doc code.math { color: var(--dim); }
+.doc .k { font-weight: 700; } .doc .c { color: var(--dim); font-style: italic; } .doc .s, .doc .n { color: var(--brass); }
+.doc blockquote { margin: 0; padding-left: 1rem; border-left: 2px solid var(--line); color: var(--dim); }
+.doc hr { border: 0; border-top: 1px solid var(--line); width: 100%; }
+.doc img { max-width: 100%; border: 1px solid var(--line); display: block; }
+.doc mark { background: var(--fg); color: var(--bg); padding: 0 0.15em; }
+.doc kbd { border: 1px solid var(--line); border-bottom-width: 2px; padding: 0 0.35em; font-size: 0.85em; }
+.doc small { color: var(--dim); }
+.tw { overflow-x: auto; }
+.doc table { border-collapse: collapse; font-size: var(--step--1); min-width: 50%; }
+.doc th, .doc td { text-align: left; padding: 0.35rem 0.8rem 0.35rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+.doc th { border-bottom-color: var(--fg); color: var(--brass); font-weight: 500; }
+.callout { border: 1px solid var(--line); background: var(--panel); padding: 0.6rem 0.9rem; max-width: 68ch; }
+.callout .co-t { font-size: var(--step--1); font-weight: 700; }
+.callout .co-t::before { content: "[" attr(data-type) "] "; color: var(--dim); font-weight: 400; text-transform: lowercase; }
+.callout .co-b { margin-top: 0.4rem; color: var(--dim); }
+.callout .co-b > * + * { margin-top: 0.5rem; }
+.callout[data-type="warning"], .callout[data-type="danger"], .callout[data-type="caution"], .callout[data-type="failure"], .callout[data-type="bug"] { border-left: 3px solid var(--fg); }
+summary.co-t { cursor: pointer; }
+
+.main.site { padding: 0; overflow: hidden; }
+.shell.site .eye { right: auto; left: 1.2rem; top: 0.9rem; }
+@media (min-width: 761px) { .shell.site .eye { display: block; } }
+.pane.site { max-width: none; height: 100%; gap: 0; }
+.pane.site iframe { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
+
+/* listings and viewers */
+.ls { display: grid; gap: 1px; }
+.ls a, .ls div { display: grid; grid-template-columns: minmax(0, 1fr) 6.5rem 6.5rem; gap: 0.75rem; padding: 0.2rem 0; text-decoration: none; color: var(--fg); border-bottom: 1px solid var(--line); font-size: var(--step--1); }
+.ls a:hover { color: var(--accent); }
+.ls .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ls .nm b { color: var(--dim); font-weight: 400; margin-right: 0.5rem; }
+.ls .d { color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ls mark { background: var(--fg); color: var(--bg); }
+.hit { font-size: var(--step--1); color: var(--dim); grid-column: 1 / -1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.viewer { border: 1px solid var(--line); background: var(--panel); }
+.viewer img { display: block; max-width: 100%; margin: 0 auto; }
+.viewer iframe { display: block; width: 100%; height: 68vh; border: 0; background: #fff; }
+.viewer pre { margin: 0; padding: 1rem; overflow: auto; font-size: var(--step--1); max-height: 68vh; }
+
+/* prompt line */
+.foot { border-top: 1px solid var(--line); font-size: var(--step--1); }
+#out { padding: 0.5rem 0; border-bottom: 1px solid var(--line); color: var(--dim); white-space: pre-wrap; max-height: 9rem; overflow-y: auto; }
+#out b { color: var(--fg); font-weight: 500; }
+.line { display: flex; align-items: center; gap: 0.6rem; min-height: 2.4rem; }
+.mode { background: var(--accent); color: var(--bg); font-weight: 700; padding: 0.1rem 0.55rem; }
+.line label { color: var(--ok); white-space: nowrap; } .line label span { color: var(--accent); }
+#cmd { flex: 1; min-width: 0; font: inherit; color: var(--fg); background: none; border: 0; outline: none; caret-color: var(--accent); }
+#cmd::placeholder { color: var(--line); }
+.bit { color: var(--dim); white-space: nowrap; } .bit span { color: var(--brass); }
+.line button { background: none; border: 0; color: var(--dim); cursor: pointer; padding: 0.2rem 0; white-space: nowrap; }
+.line button:hover { color: var(--accent); }
+
+/* quick search */
+#pal { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, 0.62); display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh; }
+#pal[hidden] { display: none; }
+.pal-box { width: min(42rem, 92vw); background: var(--panel); border: 1px solid var(--fg); box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.6); display: flex; flex-direction: column; max-height: 70vh; }
+#palq { font: inherit; font-size: var(--step-1); color: var(--fg); background: none; border: 0; border-bottom: 1px solid var(--line); outline: none; padding: 0.8rem 1rem; caret-color: var(--accent); }
+#palq::placeholder { color: var(--dim); }
+#pall { list-style: none; margin: 0; padding: 0.3rem 0; overflow-y: auto; min-height: 3rem; }
+#pall li { display: grid; grid-template-columns: 4.2rem minmax(0, 1fr); gap: 0.75rem; padding: 0.3rem 1rem; cursor: pointer; align-items: baseline; }
+#pall li.h { display: block; cursor: default; color: var(--dim); font-size: 0.72rem; text-transform: lowercase; letter-spacing: 0.08em; padding-top: 0.6rem; }
+#pall li .k { color: var(--dim); font-size: 0.72rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#pall li .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pall li .t small { color: var(--dim); margin-left: 0.7rem; font-size: 0.78rem; }
+#pall li .s { grid-column: 2; color: var(--dim); font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pall li.on { background: var(--accent); color: var(--bg); }
+#pall li.on .k, #pall li.on .t small, #pall li.on .s { color: var(--bg); }
+#pall mark { background: none; color: inherit; text-decoration: underline; text-underline-offset: 3px; font-weight: 700; }
+#pall .none { display: block; color: var(--dim); padding: 0.8rem 1rem; cursor: default; }
+.pal-foot { display: flex; gap: 1.2rem; flex-wrap: wrap; padding: 0.45rem 1rem; border-top: 1px solid var(--line); color: var(--dim); font-size: 0.72rem; }
+.pal-foot b { color: var(--fg); font-weight: 500; }
+
+@media (max-width: 760px) {
+  .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: 9.5rem minmax(0, 1fr); }
+  .tree { border-right: 0; border-bottom: 1px solid var(--line); }
+  .main { padding: 1rem 0 2rem; }
+  .bit, .mode, .line label .h { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .tree button { transition: none; } .tree button.enter { animation: none; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <span class="host">vault</span>
+    <nav class="crumbs" id="crumbs" aria-label="Location"></nav>
+    <span class="count" id="count"></span>
+  </div>
+  <div class="shell">
+    <nav class="tree" id="tree" aria-label="Files"></nav>
+    <pre class="eye" id="eye" aria-hidden="true"></pre>
+    <main class="main" id="main">
+      <article class="pane" id="pane"></article>
+    </main>
+  </div>
+  <div class="foot">
+    <div id="out" hidden></div>
+    <div class="line">
+      <span class="mode" id="mode">NORMAL</span>
+      <label for="cmd"><span class="h">vault </span><span>›</span></label>
+      <input id="cmd" type="text" placeholder="help · ls · cd · cat · grep · ⌘K search" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <span class="bit" id="bit" aria-hidden="true"><span>[·_·]</span> bit: idle</span>
+      <button type="button" id="themeBtn" title="Cycle theme">theme: mono</button>
+    </div>
+  </div>
+</div>
+
+<div id="pal" hidden>
+  <div class="pal-box" role="dialog" aria-label="Quick search">
+    <input id="palq" type="text" placeholder="Jump to a note, or type > for commands" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Quick search">
+    <ul id="pall"></ul>
+    <div class="pal-foot"><span><b>↑↓</b> move</span><span><b>↵</b> open</span><span><b>esc</b> close</span><span><b>&gt;</b> commands</span></div>
+  </div>
+</div>
+
+<script src="res/render.js"></script>
+<script src="res/katex/katex.min.js"></script>
+<script src="res/katex/mhchem.min.js"></script>
+<script>
+(() => {
+'use strict';
+const $ = (id) => document.getElementById(id);
+const root = document.documentElement;
+const esc = VaultMD.esc;
+const native = (m) => { try { window.webkit.messageHandlers.native.postMessage(m); } catch (e) {} };
+const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const errors = [];
+addEventListener('error', (e) => { errors.push(String(e.message) + ' @' + (e.lineno || '?')); native({ log: 'JS error: ' + e.message }); });
+addEventListener('unhandledrejection', (e) => { errors.push('promise: ' + (e.reason && e.reason.message || e.reason)); });
+
+// ---------- data ----------
+const NUM = /^(\d+(?:\.\d+)*)\.?\s+/;
+const IMG = /^(png|jpe?g|gif|svg|webp|avif|bmp)$/;
+const TEXTY = new Set(['txt', 'json', 'csv', 'py', 'js', 'swift', 'c', 'h', 'cpp', 'sh', 'yaml', 'yml', 'toml', 'css', 'xml', 'log', 'ini']);
+const extOf = (n) => { const m = /\.([^.]+)$/.exec(n); return m ? m[1].toLowerCase() : ''; };
+const enc = (p) => p.split('/').map(encodeURIComponent).join('/');
+const S = { cols: [], roots: [], byPath: [], byName: [], vroot: null, container: null, sel: 0, node: null, token: 0, stamps: [], texts: {}, all: null };
+
+function mk(e, ci, parent) {
+  const dir = !!e.d;
+  return { ci, name: e.n, path: e.p || '', dir, size: e.s || 0, mtime: e.m || 0, parent, children: [], num: null,
+    ext: dir ? '' : extOf(e.n), stem: dir ? e.n : e.n.replace(/\.md$/i, '') };
+}
+const cmpNode = (a, b) => {
+  const rank = (n) => (n.dir ? 0 : n.num ? 1 : 2);
+  if (rank(a) !== rank(b)) return rank(a) - rank(b);
+  if (a.num && b.num) {
+    const x = a.num.split('.').map(Number), y = b.num.split('.').map(Number);
+    for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0);
+  }
+  return a.stem.localeCompare(b.stem, undefined, { numeric: true, sensitivity: 'base' });
+};
+// Files named "3.2.1 Title" nest under "3.2 Title" and "3 Title" in the same folder.
+function group(list, ci, parent) {
+  const nodes = list.map((e) => { const n = mk(e, ci, parent); if (e.d) n.children = group(e.c || [], ci, n); return n; });
+  // "_downloads/<hash>/<file>" becomes one flat "downloads" folder; each file keeps its real path.
+  for (const n of nodes) {
+    if (!(n.dir && n.name === '_downloads')) continue;
+    const files = [];
+    (function w(x) { for (const c of x.children) { if (c.dir) w(c); else { c.parent = n; files.push(c); } } })(n);
+    n.children = files.sort((a, b) => a.stem.localeCompare(b.stem, undefined, { numeric: true, sensitivity: 'base' }));
+    n.display = 'downloads';
+  }
+  for (const n of nodes) if (n.dir && n.name.toLowerCase() === 'attachments') n.quiet = true;   // image storage, not for browsing
+  const byNum = new Map();
+  for (const n of nodes) { const m = NUM.exec(n.stem); if (m) { n.num = m[1]; if (!n.dir && !byNum.has(m[1])) byNum.set(m[1], n); } }
+  const top = [];
+  for (const n of nodes) {
+    const p = n.num && n.num.includes('.') ? byNum.get(n.num.replace(/\.\d+$/, '')) : null;
+    if (p && p !== n) { p.children.push(n); n.parent = p; } else top.push(n);
+  }
+  top.sort(cmpNode);
+  for (const n of nodes) if (!n.dir) n.children.sort(cmpNode);
+  return top;
+}
+function indexTree(ci, raw) {
+  const r = { ci, name: S.cols[ci].name, path: '', dir: true, size: 0, mtime: 0, parent: null, children: [], num: null, ext: '', stem: S.cols[ci].name, root: true };
+  r.children = group(raw.children || [], ci, r);
+  const bp = {}, bn = {};
+  (function walk(n) {
+    for (const c of n.children) {
+      bp[c.path] = c;
+      for (const k of [c.name.toLowerCase(), c.stem.toLowerCase()]) if (!(k in bn)) bn[k] = c;
+      walk(c);
+    }
+  })(r);
+  S.roots[ci] = r; S.byPath[ci] = bp; S.byName[ci] = bn;
+  return r;
+}
+function buildMaps(ci, r) {
+  const bp = {}, bn = {};
+  if (r.path) bp[r.path] = r;
+  (function walk(n) {
+    for (const c of n.children) {
+      if (c.path && !(c.path in bp)) bp[c.path] = c;
+      for (const k of [c.name.toLowerCase(), c.stem.toLowerCase()]) if (!(k in bn)) bn[k] = c;
+      walk(c);
+    }
+  })(r);
+  S.roots[ci] = r; S.byPath[ci] = bp; S.byName[ci] = bn;
+}
+// The mirrored site's own sidebar is the table of contents: captions become folders, pages nest as in the site.
+function parseToc(html) {
+  const nav = new DOMParser().parseFromString(html, 'text/html').querySelector('nav.bd-docs-nav');
+  if (!nav) return null;
+  const txt = (el) => el.textContent.replace(/\s+/g, ' ').trim();
+  const items = (ul) => [...ul.children].filter((li) => li.tagName === 'LI').map((li) => {
+    const a = li.querySelector(':scope > a'), sub = li.querySelector(':scope > details > ul');
+    return a ? { title: txt(a), href: a.getAttribute('href') || '', kids: sub ? items(sub) : [] } : null;
+  }).filter(Boolean);
+  const groups = [];
+  let cap = null, home = null;
+  for (const el of (nav.querySelector('.bd-toc-item') || nav).children) {
+    if (el.matches('p.caption')) cap = txt(el);
+    else if (el.matches('ul.bd-sidenav__home-link')) { const a = el.querySelector('a'); if (a) home = txt(a); }
+    else if (el.matches('ul')) { groups.push({ caption: cap, items: items(el) }); cap = null; }
+  }
+  return { home, groups };
+}
+async function indexSite(ci, raw) {
+  const cfg = S.cols[ci].site, base = cfg.root.replace(/\/$/, '');
+  let toc = null;
+  try { const r = await fetch('c/' + ci + '/' + enc(base + '/' + cfg.entry)); if (r.ok) toc = parseToc(await r.text()); } catch (e) {}
+  if (!toc) return indexTree(ci, raw);   // no mirror on disk: fall back to the plain folder view
+  const page = (t, parent) => {
+    const href = t.href.split('#')[0].split('?')[0];
+    const n = mk({ n: t.title, p: base + '/' + href }, ci, parent);
+    n.site = href; n.ext = 'html'; n.stem = t.title; n.name = t.title;
+    const m = NUM.exec(t.title); if (m) n.num = m[1];
+    n.children = t.kids.map((k) => page(k, n));
+    return n;
+  };
+  const r = mk({ n: S.cols[ci].name, p: base + '/' + cfg.entry, d: 0 }, ci, null);
+  r.site = cfg.entry; r.ext = 'html'; r.stem = S.cols[ci].name; r.root = true;
+  for (const g of toc.groups) {
+    if (g.caption) {
+      const d = mk({ n: g.caption, p: '', d: 1 }, ci, r);
+      d.children = g.items.map((t) => page(t, d));
+      r.children.push(d);
+    } else g.items.forEach((t) => r.children.push(page(t, r)));
+  }
+  // anything in the folder outside the mirrored site (your own notes) stays reachable
+  const mine = mk({ n: 'my notes', p: '', d: 1 }, ci, r);
+  mine.children = group((raw.children || []).filter((e) => e.n !== 'Course Site'), ci, mine);
+  if (mine.children.length) r.children.push(mine);
+  buildMaps(ci, r);
+}
+// Hidden collections (a shared attachments folder) are searched for images but never listed.
+const visibleRoots = () => S.roots.filter((r, i) => r && !S.cols[i].hidden);
+const home = () => S.vroot || visibleRoots()[0];
+function linkRoots() {
+  const vis = visibleRoots();
+  S.roots.forEach((r) => (r.parent = null));
+  if (vis.length > 1) {
+    S.vroot = { ci: -1, name: '~', path: '', dir: true, size: 0, mtime: 0, parent: null, children: vis, num: null, ext: '', stem: '~', virtual: true };
+    vis.forEach((r) => (r.parent = S.vroot));
+  } else S.vroot = null;
+}
+const hasKids = (n) => n.children.length > 0;
+const isContainer = (n) => n.dir || hasKids(n);
+const label = (n) => ({ num: n.num || '', text: n.num ? n.stem.replace(NUM, '') : (n.display || n.stem) + (n.dir ? '/' : '') });
+// Things the app can show itself. Anything else (xlsx, docx, ...) opens in its own app when a note link is clicked.
+const viewable = (n) => n.dir || n.site || hasKids(n) || n.ext === 'md' || IMG.test(n.ext) || n.ext === 'pdf' || n.ext === 'html' || n.ext === 'htm' || (TEXTY.has(n.ext) && n.size < 400000);
+const pathOf = (n) => { const parts = []; for (let x = n; x && !x.virtual; x = x.parent) parts.unshift(x.stem); return parts.join('/'); };
+const total = (n) => { let t = 0; (function w(x) { for (const c of x.children) { if (!c.dir) t++; w(c); } })(n); return t; };
+
+// ---------- navigation ----------
+const cards = (c) => {
+  const out = [];
+  if (c.parent) out.push({ up: true, node: c.parent });
+  out.push({ self: true, node: c });
+  for (const ch of c.children) if (!ch.quiet) out.push({ node: ch });
+  return out;
+};
+const selfIndex = (c) => (c.parent ? 1 : 0);
+function goTo(n, opts) {
+  if (!n) return;
+  if (isContainer(n)) { S.container = n; S.sel = selfIndex(n); }
+  else { S.container = n.parent || S.roots[n.ci]; S.sel = cards(S.container).findIndex((k) => k.node === n); }
+  drawWheel(); openNode(cards(S.container)[S.sel].node, opts);
+}
+function goUp() {
+  const c = S.container;
+  if (!c.parent) return false;
+  S.container = c.parent;
+  S.sel = cards(S.container).findIndex((k) => k.node === c);
+  drawWheel(); openNode(c, { quiet: true });
+  return true;
+}
+function move(delta) {
+  const cs = cards(S.container), n = cs.length, first = S.container.parent ? 1 : 0;
+  if (n - first < 2) return;
+  let k = S.sel;
+  do { k = (k + delta + n) % n; } while (k < first);
+  S.sel = k; drawWheel(); openNode(cs[k].node);
+}
+function enter() {
+  const n = cards(S.container)[S.sel].node;
+  if (n !== S.container && isContainer(n)) goTo(n);
+}
+function activate(k) {
+  const c = cards(S.container)[k];
+  if (c.up) return goUp();
+  if (k === S.sel) return c.node !== S.container && isContainer(c.node) ? goTo(c.node) : undefined;
+  S.sel = k; drawWheel(); openNode(c.node);
+}
+
+// ---------- wheel ----------
+const tree = $('tree');
+let wheelKey = '';
+function drawWheel() {
+  const cs = cards(S.container);
+  const key = S.container.ci + ':' + S.container.path + ':' + S.container.name + ':' + cs.length;
+  if (key !== wheelKey) {
+    wheelKey = key;
+    tree.textContent = '';
+    cs.forEach((c, k) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'enter' + (c.up ? ' up' : '');
+      const l = c.up ? { num: 'back', text: '../' } : label(c.node);
+      const kids = !c.up && !c.self && isContainer(c.node) ? '<span class="t">▸ ' + c.node.children.length + '</span>' : '';
+      b.innerHTML = '<span class="n">' + esc(c.self ? (l.num ? l.num + ' · this' : 'this folder') : l.num || (c.up ? 'back' : c.node.root && c.node.site ? 'site' : c.node.dir ? 'folder' : c.node.ext || 'file')) + '</span><span class="name">' + esc(l.text) + '</span>' + kids;
+      b.title = c.up ? 'Go up to ' + c.node.name : c.node.name;
+      b.addEventListener('click', () => activate(k));
+      tree.appendChild(b);
+    });
+    const h = document.createElement('div');
+    h.className = 'hint'; h.textContent = 'scroll · j k · , up · . in';
+    tree.appendChild(h);
+  }
+  const bs = tree.querySelectorAll('button'), n = cs.length;
+  bs.forEach((b, k) => {
+    let d = k - S.sel;
+    if (d > n / 2) d -= n; else if (d < -n / 2) d += n;
+    const a = Math.abs(d), th = (d * 11 * Math.PI) / 180;
+    b.style.setProperty('--x', (12 + 330 * (1 - Math.cos(th))).toFixed(1) + 'px');
+    b.style.setProperty('--y', (330 * Math.sin(th)).toFixed(1) + 'px');
+    b.style.setProperty('--r', (-d * 11) + 'deg');
+    b.style.setProperty('--s', a ? '0.84' : '1.1');
+    b.style.setProperty('--o', [1, 0.8, 0.55, 0.32, 0.14][a] || 0);
+    b.style.pointerEvents = a > 4 ? 'none' : '';
+    b.tabIndex = a > 4 ? -1 : 0;
+    b.classList.toggle('on', k === S.sel);
+  });
+  const n0 = cs.length - (S.container.parent ? 1 : 0);
+  $('count').textContent = (S.sel + 1 - (S.container.parent ? 1 : 0)) + ' / ' + n0;
+}
+let acc = 0, lastStep = 0, dragY = null, dragged = false;
+tree.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  acc += e.deltaY;
+  const now = Date.now();
+  if (Math.abs(acc) > 40 && now - lastStep > 110) { move(acc > 0 ? 1 : -1); acc = 0; lastStep = now; }
+}, { passive: false });
+tree.addEventListener('pointerdown', (e) => { dragY = e.clientY; dragged = false; });
+addEventListener('pointermove', (e) => {
+  if (dragY === null) return;
+  const dy = e.clientY - dragY;
+  if (Math.abs(dy) > 45) { move(dy < 0 ? 1 : -1); dragY = e.clientY; dragged = true; }
+});
+addEventListener('pointerup', () => { dragY = null; setTimeout(() => (dragged = false), 0); });
+tree.addEventListener('click', (e) => { if (dragged) { e.stopPropagation(); e.preventDefault(); } }, true);
+
+// ---------- panes ----------
+const fmtSize = (b) => (b < 1024 ? b + ' B' : b < 1048576 ? (b / 1024).toFixed(0) + ' KB' : (b / 1048576).toFixed(1) + ' MB');
+const fmtDate = (s) => (s ? new Date(s * 1000).toISOString().slice(0, 10) : '');
+const urlOf = (n) => 'c/' + n.ci + '/' + enc(n.path);
+const promptLine = (cmd) => '<p class="prompt"><span class="u">vault</span> ~ <span class="s">›</span> <span class="c">' + esc(cmd) + '</span></p>';
+function listing(nodes, extra) {
+  nodes = nodes.filter((c) => !c.quiet);
+  return '<div class="ls">' + nodes.map((c) => {
+    const l = label(c);
+    return '<a href="#" data-p="' + c.ci + ':' + esc(c.path) + '"><span class="nm"><b>' + esc(l.num || (c.dir || (c.root && c.site) ? 'dir' : c.ext || 'file')) + '</b>' + esc(l.text) + '</span><span class="d">' +
+      (c.dir || hasKids(c) ? total(c) + ' items' : c.site ? '' : fmtSize(c.size)) + '</span><span class="d">' + fmtDate(c.mtime) + '</span>' + (extra ? '<span class="hit">' + extra(c) + '</span>' : '') + '</a>';
+  }).join('') + '</div>';
+}
+function actions(n) {
+  const b = [];
+  if (!n.dir && n.ext !== 'md') b.push('<button class="btn" data-act="open">open in default app</button>');
+  if (n.ext === 'md') b.push('<button class="btn" data-act="obsidian">edit in Obsidian</button>');
+  if (!n.virtual) b.push('<button class="btn" data-act="reveal">reveal in Finder</button>');
+  return '<div class="row">' + b.join('') + '</div>';
+}
+function findName(ci, target, assets) {
+  const t0 = target.toLowerCase().replace(/\.md$/, ''), t1 = t0.split('/').pop();
+  const order = [ci].concat(S.roots.map((r, i) => i).filter((i) => i !== ci && !S.cols[i].hidden));
+  if (assets) order.push(...S.roots.map((r, i) => i).filter((i) => S.cols[i].hidden));
+  for (const i of order) {
+    const bn = S.byName[i] || {};
+    if (t0 in bn) return bn[t0];
+    if (t1 in bn) return bn[t1];
+  }
+  return null;
+}
+function ctxFor(n) {
+  const ci = n.ci, dir = n.path.split('/').slice(0, -1), web = S.cols[ci].web;
+  const resolve = (href) => {
+    let h = href.split('#')[0].split('?')[0];
+    try { h = decodeURIComponent(h); } catch (e) {}
+    if (!h) return null;
+    const parts = h.startsWith('/') ? [] : dir.slice();
+    for (const seg of h.split('/')) { if (seg === '..') parts.pop(); else if (seg && seg !== '.') parts.push(seg); }
+    return parts.join('/');
+  };
+  const a = (t, inner) => '<a href="#" class="wl" data-p="' + t.ci + ':' + esc(t.path) + '">' + inner + '</a>';
+  return {
+    mathEnabled: S.cols[ci].math !== false,
+    math(tex, display) {
+      if (typeof katex === 'undefined') return '<code class="math">' + esc(tex) + '</code>';
+      try {
+        return katex.renderToString(VaultMD.cleanTex(tex), { displayMode: display, throwOnError: false, strict: 'ignore', output: 'html', trust: false });
+      } catch (e) { return '<code class="math">' + esc(tex) + '</code>'; }
+    },
+    wiki(target, inner) { const t = findName(ci, target); return t ? a(t, inner) : '<span class="wl missing" title="' + esc(target) + ' is outside this folder. Add the whole vault with File > Add Folder to follow it.">' + inner + '</span>'; },
+    link(href, inner) {
+      if (/^(https?:|mailto:)/i.test(href)) return '<a href="' + esc(href) + '" data-ext="' + esc(href) + '">' + inner + '</a>';
+      if (href[0] === '#') return '<a href="#" data-anchor="' + esc(href.slice(1)) + '">' + inner + '</a>';
+      if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return inner;
+      const p = resolve(href);
+      if (p === null) return inner;
+      const t = S.byPath[ci][p];
+      if (t) return '<a href="#" data-p="' + ci + ':' + esc(t.path) + '">' + inner + '</a>';
+      if (web && p.startsWith(web.prefix)) {
+        const u = web.base + encodeURI(p.slice(web.prefix.length));
+        return '<a href="' + esc(u) + '" data-ext="' + esc(u) + '" title="Opens the live course site">' + inner + '</a>';
+      }
+      return '<span class="wl missing" title="not found: ' + esc(p) + '">' + inner + '</span>';
+    },
+    asset(src) {
+      const p = resolve(src), t = (p !== null && S.byPath[ci][p]) || findName(ci, src, true);
+      return t ? urlOf(t) : null;
+    }
+  };
+}
+async function getText(n) {
+  const k = n.ci + ':' + n.path + ':' + n.mtime;
+  if (S.texts[k] !== undefined) return S.texts[k];
+  const r = await fetch(urlOf(n));
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return (S.texts[k] = await r.text());
+}
+async function openNode(n, opts) {
+  opts = opts || {};
+  const mine = ++S.token;
+  S.node = n;
+  pushRecent(n);
+  if (!opts.quiet) out.hidden = true;
+  const siteMode = !!n.site;
+  $('main').classList.toggle('site', siteMode);
+  document.querySelector('.shell').classList.toggle('site', siteMode);
+  $('pane').classList.toggle('site', siteMode);
+  if (siteMode) {
+    if (job) job.finish(true);
+    $('pane').innerHTML = '<iframe id="siteframe" src="' + urlOf(n) + '" title="' + esc(n.name) + '"></iframe>';
+    const f = $('siteframe');
+    f.addEventListener('load', () => onSiteLoad(f, n.ci));
+    $('main').scrollTop = 0;
+    crumbs(n);
+    native({ title: label(n).text.replace(/\/$/, '') + ' · ' + S.cols[Math.max(0, n.ci)].name, save: JSON.stringify({ c: n.ci, path: n.path }) });
+    return;
+  }
+  const cmd = n.virtual ? 'ls ~' : (n.dir ? 'ls -l "' : 'cat "') + pathOf(n) + (n.virtual ? '' : n.dir ? '/"' : '"');
+  let html = promptLine(cmd);
+  try {
+    if (n.dir || n.virtual) {
+      html += '<h1 class="doc-h">' + esc(n.virtual ? 'Folders' : n.name) + '</h1>' + (n.children.length ? listing(n.children) : '<p class="note">Empty folder.</p>') + actions(n);
+    } else if (n.ext === 'md') {
+      const r = VaultMD.render(await getText(n), ctxFor(n));
+      if (mine !== S.token) return;
+      const fm = r.fm || {}, keys = Object.keys(fm).filter((k) => !['tags', 'title', 'course', 'source', 'repo'].includes(k) && typeof fm[k] === 'string');
+      html += '<div class="doc">' + r.html + '</div>';
+      if (keys.length) html += '<dl class="meta">' + keys.map((k) => '<dt>' + esc(k) + '</dt><dd>' + esc(fm[k]) + '</dd>').join('') + '</dl>';
+      if (Array.isArray(fm.tags) && fm.tags.length) html += '<div class="chips">' + fm.tags.map((t) => '<span>' + esc(t) + '</span>').join('') + '</div>';
+      if (hasKids(n)) html += '<h2 class="doc-h">Inside</h2>' + listing(n.children);
+      html += actions(n);
+    } else if (IMG.test(n.ext)) {
+      html += '<div class="viewer"><img src="' + urlOf(n) + '" alt="' + esc(n.name) + '"></div>' + actions(n);
+    } else if (n.ext === 'pdf') {
+      html += '<div class="viewer"><iframe src="' + urlOf(n) + '" title="' + esc(n.name) + '"></iframe></div>' + actions(n);
+    } else if (n.ext === 'html' || n.ext === 'htm') {
+      html += '<div class="viewer"><iframe sandbox="allow-scripts" src="' + urlOf(n) + '" title="' + esc(n.name) + '"></iframe></div>' + actions(n);
+    } else if (TEXTY.has(n.ext) && n.size < 400000) {
+      const t = await getText(n);
+      if (mine !== S.token) return;
+      html += '<div class="viewer"><pre>' + esc(t) + '</pre></div>' + actions(n);
+    } else {
+      html += '<dl class="meta"><dt>kind</dt><dd>' + esc(n.ext || 'file') + '</dd><dt>size</dt><dd>' + fmtSize(n.size) + '</dd><dt>modified</dt><dd>' + fmtDate(n.mtime) + '</dd></dl>' + actions(n);
+    }
+  } catch (e) {
+    html += '<p class="note">Could not open this file: ' + esc(e.message) + '</p>' + actions(n);
+  }
+  if (mine !== S.token) return;
+  const cs = cards(S.container);
+  if (cs.length > 3) html += '<div class="row pager"><button class="btn" data-act="prev">‹ prev</button><button class="btn" data-act="next">next ›</button></div>';
+  $('pane').innerHTML = html;
+  $('main').scrollTop = 0;
+  crumbs(n);
+  native({ title: label(n).text.replace(/\/$/, '') + ' · ' + S.cols[Math.max(0, n.ci)].name, save: JSON.stringify({ c: n.ci, path: n.path }) });
+  if (!opts.quiet) printIn($('pane'));
+}
+function crumbs(n) {
+  const chain = [];
+  for (let x = n; x; x = x.parent) chain.unshift(x);
+  const el = $('crumbs');
+  el.textContent = '';
+  chain.forEach((x, k) => {
+    if (k) { const i = document.createElement('i'); i.textContent = '›'; el.appendChild(i); }
+    const b = document.createElement('button');
+    const l = label(x);
+    b.type = 'button'; b.textContent = x.virtual ? '~' : ((l.num ? l.num + ' ' : '') + l.text).replace(/\/$/, ''); b.title = x.name;
+    b.addEventListener('click', () => goTo(x));
+    el.appendChild(b);
+  });
+}
+
+// ---------- mirrored site: theme, sidebar, keeping the wheel in step with in-page navigation ----------
+S.sidebar = false;
+function frameStyle(f) {
+  try {
+    const d = f.contentDocument, dark = skin() !== 'parchment';
+    d.documentElement.dataset.mode = dark ? 'dark' : 'light';
+    d.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    let st = d.getElementById('vault-inject');
+    if (!st) { st = d.createElement('style'); st.id = 'vault-inject'; d.head.appendChild(st); }
+    st.textContent = S.sidebar ? '' : '.bd-sidebar-primary{display:none!important}';
+  } catch (e) {}
+}
+function restyleFrame() { const f = document.getElementById('siteframe'); if (f) frameStyle(f); }
+function syncTo(n) {
+  if (isContainer(n)) { S.container = n; S.sel = selfIndex(n); }
+  else { S.container = n.parent || S.roots[n.ci]; S.sel = cards(S.container).findIndex((k) => k.node === n); }
+  S.node = n; pushRecent(n); drawWheel(); crumbs(n);
+  native({ title: label(n).text.replace(/\/$/, '') + ' · ' + S.cols[Math.max(0, n.ci)].name, save: JSON.stringify({ c: n.ci, path: n.path }) });
+}
+function onSiteLoad(f, ci) {
+  frameStyle(f);
+  try {
+    f.contentDocument.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); e.stopImmediatePropagation(); palToggle(); }
+    }, true);
+  } catch (e) {}
+  setTimeout(() => frameStyle(f), 250);   // the theme's own script runs after load and may reset the mode
+  try {
+    const p = decodeURIComponent(f.contentWindow.location.pathname).replace(/^\/c\/\d+\//, '');
+    const n = S.byPath[ci][p];
+    if (n && n !== S.node && n.site) syncTo(n);
+  } catch (e) {}
+}
+
+// pane clicks: note links, external links, anchors, actions
+$('pane').addEventListener('click', (e) => {
+  const a = e.target.closest('a, button[data-act]');
+  if (!a) return;
+  if (a.dataset.act) {
+    const n = S.node, act = a.dataset.act;
+    if (act === 'prev') move(-1); else if (act === 'next') move(1);
+    else if (n && !n.virtual) native({ [act]: { c: n.ci, rel: n.path } });
+    return;
+  }
+  e.preventDefault();
+  if (a.dataset.p) {
+    const i = a.dataset.p.indexOf(':'), n = S.byPath[+a.dataset.p.slice(0, i)][a.dataset.p.slice(i + 1)];
+    if (n) { if (viewable(n)) goTo(n); else native({ open: { c: n.ci, rel: n.path } }); }
+  }
+  else if (a.dataset.ext) native({ ext: a.dataset.ext });
+  else if (a.dataset.anchor) { const t = document.getElementById(a.dataset.anchor); if (t) t.scrollIntoView(); }
+});
+
+// ---------- terminal print-in ----------
+const gaze = { mx: null, my: null, tx: 0, ty: 0, printing: false, erase: 0 };
+let job = null;
+function printIn(pane) {
+  if (job) job.finish(true);
+  if (calm) return;
+  const units = [];
+  const split = (el) => { for (const c of el.children) { if (c.matches('.doc')) split(c); else if (c.matches('ul, ol, dl, .ls')) units.push(...c.children); else units.push(c); } };
+  split(pane);
+  const items = units.map((el) => {
+    const atomic = el.matches('img, iframe, .viewer, hr, .row, .tw, .chips');
+    const nodes = [];
+    if (!atomic) {
+      const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let t;
+      while ((t = w.nextNode())) if (t.nodeValue.trim()) nodes.push([t, t.nodeValue]);
+      nodes.forEach(([t]) => (t.nodeValue = ''));
+    }
+    el.classList.add('wait');
+    return { el, nodes, atomic };
+  });
+  const sum = items.reduce((s, it) => s + it.nodes.reduce((a, [, t]) => a + t.length, 0), 0);
+  const rate = Math.max(8, Math.ceil(sum / 55));   // every note finishes in about a second
+  const box = $('main');
+  let ui = 0, ni = 0, ci = 0, last = null;
+  const aim = (x, y) => { gaze.tx = x; gaze.ty = Math.min(Math.max(y, 8), box.getBoundingClientRect().bottom - 6); };
+  const me = {
+    finish(replaced) {
+      items.forEach((it) => { it.el.classList.remove('wait'); it.nodes.forEach(([t, v]) => (t.nodeValue = v)); });
+      job = null; gaze.printing = false; gaze.erase = replaced ? 0 : 1;
+    }
+  };
+  job = me; gaze.printing = true; gaze.erase = 0;
+  setTimeout(() => { if (job === me) me.finish(false); }, 3000);   // never leave a note half-typed, even if animation frames are throttled
+  (function tick() {
+    if (job !== me) return;
+    let budget = rate;
+    while (budget > 0 && ui < items.length) {
+      const it = items[ui];
+      it.el.classList.remove('wait');
+      if (it.atomic || !it.nodes.length) {
+        const r = it.el.getBoundingClientRect();
+        aim(r.left + 10, r.bottom - 8); last = null;
+        ui++; ni = 0; ci = 0; budget = 0; continue;
+      }
+      const [node, full] = it.nodes[ni];
+      const take = Math.min(budget, full.length - ci);
+      ci += take; budget -= take; node.nodeValue = full.slice(0, ci); last = node;
+      if (ci >= full.length) { ni++; ci = 0; if (ni >= it.nodes.length) { ui++; ni = 0; } }
+    }
+    if (last) {
+      const rg = document.createRange();
+      rg.selectNodeContents(last); rg.collapse(false);
+      const r = rg.getClientRects()[0] || rg.getBoundingClientRect();
+      if (r && (r.left || r.top)) aim(r.right + 4, r.top + r.height / 2);
+    }
+    if (ui < items.length) requestAnimationFrame(tick); else me.finish(false);
+  })();
+}
+
+// ---------- the eye ----------
+(function () {
+  const el = $('eye'), W = 27, H = 11;
+  const cv = document.createElement('canvas');
+  cv.className = 'gaze'; cv.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(cv);
+  const ctx = cv.getContext('2d');
+  let lid = 1, ex = 0, ey = 0, lastKey = '', vw = 0, vh = 0, n = 0, col = {}, dirty = false;
+  const corpus = () => {
+    const w = (S.container ? S.container.children : []).slice(0, 24).map((c) => label(c).text.toLowerCase().replace(/[^a-z0-9]+/g, '·'));
+    return (w.join('·') || 'vault·notes·') + '·';
+  };
+  function fit() {
+    const d = Math.min(devicePixelRatio || 1, 2);
+    vw = innerWidth; vh = innerHeight;
+    cv.width = vw * d; cv.height = vh * d; ctx.setTransform(d, 0, 0, d, 0, 0);
+  }
+  function drawEye() {
+    const px = ex * 5.5, py = ey * 2.2, text = corpus();
+    let html = '', t = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const cx = x - (W - 1) / 2, cy = y - (H - 1) / 2, nx = cx / ((W - 1) / 2), ny = cy / ((H - 1) / 2);
+        if (Math.abs(ny) > (1 - nx * nx) * lid + 0.04) { html += ' '; continue; }
+        const ch = text[t++ % text.length], d = Math.hypot((cx - px) * 0.6, cy - py);
+        html += d < 1.3 ? '<span class="p">#</span>' : d < 3.1 ? '<span class="i">' + esc(ch) + '</span>' : esc(ch);
+      }
+      html += '\n';
+    }
+    el.innerHTML = html;
+  }
+  function line(x0, y0, x1, y1, ch, color, frac, cap) {
+    const dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy), START = 64, STEP = 9;
+    const count = Math.floor((L - START - 12) / STEP);
+    if (count < 1) return;
+    const m = Math.ceil(count * frac);
+    ctx.fillStyle = color;
+    for (let i = 0; i < m; i++) { const t = (START + i * STEP) / L; ctx.fillText(ch, x0 + dx * t, y0 + dy * t); }
+    if (cap && frac >= 1) ctx.fillText(cap, x1, y1);
+  }
+  function frame() {
+    requestAnimationFrame(frame);
+    const r = el.getBoundingClientRect();
+    if (dirty) { ctx.clearRect(0, 0, vw, vh); dirty = false; }
+    if (!r.width) return;
+    if (!(n++ % 40)) { const s = getComputedStyle(root); col = { d: s.getPropertyValue('--dim').trim(), a: s.getPropertyValue('--accent').trim() }; }
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    ctx.font = '700 9px "SF Mono", ui-monospace, Menlo, monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    let target = null;
+    if (gaze.mx !== null) { line(cx, cy, gaze.mx, gaze.my, '·', col.d, 1); target = [gaze.mx, gaze.my]; dirty = true; }
+    if (gaze.printing) { line(cx, cy, gaze.tx, gaze.ty, '+', col.a, 1, '▮'); target = [gaze.tx, gaze.ty]; dirty = true; }
+    else if (gaze.erase > 0) { line(cx, cy, gaze.tx, gaze.ty, '+', col.a, gaze.erase); gaze.erase = Math.max(0, gaze.erase - 0.06); dirty = true; }
+    let lx = 0, ly = 0;
+    if (target) {
+      const dx = target[0] - cx, dy = target[1] - cy, dist = Math.hypot(dx, dy) || 1, mag = Math.min(1, dist / 420);
+      lx = (dx / dist) * mag; ly = (dy / dist) * mag;
+    }
+    ex += (lx - ex) * 0.3; ey += (ly - ey) * 0.3;
+    const key = ex.toFixed(2) + ey.toFixed(2) + lid + wheelKey;
+    if (key !== lastKey) { lastKey = key; drawEye(); }
+  }
+  addEventListener('pointermove', (e) => { gaze.mx = e.clientX; gaze.my = e.clientY; });
+  document.addEventListener('pointerleave', () => { gaze.mx = null; });
+  addEventListener('resize', fit);
+  if (!calm) setInterval(() => { lid = 0.12; setTimeout(() => (lid = 1), 140); }, 5600);
+  fit(); drawEye(); frame();
+})();
+
+// ---------- bit ----------
+const bit = $('bit');
+let calmT, sleepT;
+function wake(face, word) {
+  bit.innerHTML = '<span>' + face + '</span> bit: ' + word;
+  clearTimeout(calmT); clearTimeout(sleepT);
+  calmT = setTimeout(() => (bit.innerHTML = '<span>[·_·]</span> bit: idle'), 1400);
+  sleepT = setTimeout(() => (bit.innerHTML = '<span>[-_-]</span> bit: asleep'), 25000);
+}
+
+// ---------- prompt ----------
+const out = $('out'), cmd = $('cmd');
+const say = (html) => { out.innerHTML = html; out.hidden = false; };
+const SKINS = ['mono', 'ember', 'bistre', 'phosphor', 'parchment'];
+function setSkin(name) {
+  if (!SKINS.includes(name)) return false;
+  if (name === 'mono') root.removeAttribute('data-skin'); else root.setAttribute('data-skin', name);
+  $('themeBtn').textContent = 'theme: ' + name;
+  restyleFrame();
+  return true;
+}
+const skin = () => root.getAttribute('data-skin') || 'mono';
+$('themeBtn').addEventListener('click', () => setSkin(SKINS[(SKINS.indexOf(skin()) + 1) % SKINS.length]));
+
+function allNodes() { const r = []; S.roots.forEach((rt, i) => { if (S.cols[i].hidden) return; (function w(n) { for (const c of n.children) { r.push(c); w(c); } })(rt); }); return r; }
+function resolveName(arg) {
+  const a = arg.trim().replace(/^["']|["']$/g, '').toLowerCase();
+  if (!a) return { node: null };
+  const c = S.container;
+  if (a === '..') return { node: c.parent, up: true };
+  if (a === '~' || a === '/') return { node: S.vroot || visibleRoots()[0] };
+  const kids = c.children.concat([c]);
+  const tests = [
+    (n) => n.num === a,
+    (n) => n.stem.toLowerCase() === a || n.name.toLowerCase() === a,
+    (n) => n.stem.toLowerCase().startsWith(a),
+    (n) => n.stem.toLowerCase().includes(a)
+  ];
+  for (const t of tests) { const m = kids.filter(t); if (m.length) return { node: m[0], more: m.length - 1 }; }
+  const pool = allNodes();
+  for (const t of tests) {
+    const m = pool.filter(t).sort((x, y) => x.stem.length - y.stem.length);
+    if (m.length) return { node: m[0], more: m.length - 1, global: true };
+  }
+  return { node: null };
+}
+async function loadAll() {
+  if (S.all) return S.all;
+  const files = allNodes().filter((n) => n.ext === 'md' || n.site);
+  const res = [];
+  let k = 0;
+  const plain = (h) => { const d = new DOMParser().parseFromString(h, 'text/html'); return ((d.querySelector('article') || d.body).textContent || '').replace(/[ \t]+/g, ' '); };
+  await Promise.all(Array.from({ length: 8 }, async () => {
+    while (k < files.length) { const n = files[k++]; try { const t = await getText(n); res.push([n, n.site ? plain(t) : t]); } catch (e) {} }
+  }));
+  return (S.all = res);
+}
+async function grep(q) {
+  const needle = q.toLowerCase();
+  say('searching…');
+  const hits = [];
+  for (const [n, t] of await loadAll()) {
+    const lines = t.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const at = lines[i].toLowerCase().indexOf(needle);
+      if (at >= 0) { hits.push({ n, line: lines[i].trim().slice(Math.max(0, at - 30), at + 90), i }); break; }
+    }
+  }
+  hits.sort((a, b) => cmpNode(a.n, b.n));
+  const shown = hits.slice(0, 60);
+  S.token++;
+  let html = promptLine('grep -ril "' + q + '"') + '<h1 class="doc-h">' + hits.length + ' note' + (hits.length === 1 ? '' : 's') + '</h1>';
+  html += shown.length ? listing(shown.map((h) => h.n), (n) => { const h = shown.find((x) => x.n === n); return esc(h.line); }) : '<p class="note">Nothing matched.</p>';
+  if (hits.length > shown.length) html += '<p class="note">Showing the first ' + shown.length + '.</p>';
+  $('pane').innerHTML = html;
+  out.hidden = true;
+  printIn($('pane'));
+}
+const HELP = '<b>ls</b> [dir]         list this folder\n<b>cd</b> &lt;name&gt;       go into a folder or open a note (<b>cd ..</b> goes up, <b>cd 3.2</b> works)\n<b>cat</b> &lt;name&gt;      open a note, <b>edit</b> opens it in Obsidian, <b>reveal</b> shows it in Finder\n<b>grep</b> &lt;text&gt;     search every note\n<b>next</b> <b>prev</b> <b>pwd</b> <b>sidebar</b> (the site menu) <b>reload</b> <b>clear</b> <b>theme</b> &lt;' + SKINS.join(' | ') + '&gt;\n<b>⌘K</b> quick search (<b>&gt;</b> for commands)\nkeys: <b>j k</b> move, <b>.</b> or <b>l</b> go in, <b>,</b> or <b>h</b> go back, <b>/</b> prompt, <b>t</b> theme';
+async function run(raw) {
+  const m = /^:?\s*(\S+)\s*([\s\S]*)$/.exec(raw.trim());
+  if (!m) return;
+  const name = m[1].toLowerCase(), arg = m[2].trim();
+  wake('[^_^]', 'on it');
+  const need = () => { const r = resolveName(arg); if (!r.node) say(name + ': ' + esc(arg || '(nothing)') + ': no such note. try <b>ls</b>'); return r; };
+  if (name === 'help' || name === 'h' || name === '?') say(HELP);
+  else if (name === 'ls') {
+    const r = arg ? resolveName(arg) : { node: S.container };
+    if (!r.node) return say('ls: ' + esc(arg) + ': no such folder');
+    say(r.node.children.map((c) => (isContainer(c) ? '<b>' + esc(label(c).text.replace(/\/$/, '')) + '/</b>' : esc(label(c).text) + (c.num ? '' : ''))).join('   ') || '(empty)');
+  } else if (name === 'cd') {
+    if (!arg) return goTo(home());
+    if (arg === '..' && !S.container.parent) return say('already at the top of <b>' + esc(S.container.name) + '</b>');
+    const r = need(); if (!r.node) return;
+    if (r.up) return goUp();
+    goTo(r.node);
+    if (r.more > 0) say(r.more + ' other match' + (r.more > 1 ? 'es' : '') + '. Be more specific if that was the wrong one.');
+  } else if (['cat', 'open', 'less', 'vim', 'view'].includes(name)) {
+    const r = need(); if (!r.node) return;
+    goTo(r.node);
+    if (r.node.ext && r.node.ext !== 'md' && !IMG.test(r.node.ext) && r.node.ext !== 'pdf' && r.node.ext !== 'html') native({ open: { c: r.node.ci, rel: r.node.path } });
+    if (r.more > 0) say(r.more + ' other match' + (r.more > 1 ? 'es' : '') + '.');
+  } else if (name === 'edit' || name === 'obsidian') { if (S.node && !S.node.dir) native({ obsidian: { c: S.node.ci, rel: S.node.path } }); }
+  else if (name === 'reveal') { if (S.node && !S.node.virtual) native({ reveal: { c: S.node.ci, rel: S.node.path } }); }
+  else if (name === 'grep' || name === 'search' || name === 'find') { if (!arg) say('grep: give it some text'); else await grep(arg.replace(/^["']|["']$/g, '')); }
+  else if (name === 'sidebar') { S.sidebar = !S.sidebar; restyleFrame(); say('the site sidebar is <b>' + (S.sidebar ? 'shown' : 'hidden') + '</b>'); }
+  else if (name === 'up' || name === '..') goUp();
+  else if (name === 'next' || name === 'n') move(1);
+  else if (name === 'prev' || name === 'p') move(-1);
+  else if (name === 'pwd') say('<b>' + esc('~/' + pathOf(S.node || S.container)) + '</b>');
+  else if (name === 'reload') await reloadAll();
+  else if (name === 'clear') out.hidden = true;
+  else if (name === 'theme') say(arg ? (setSkin(arg.toLowerCase()) ? 'theme set to <b>' + esc(arg) + '</b>' : 'no theme called ' + esc(arg) + '. try: ' + SKINS.join(', ')) : 'themes: ' + SKINS.join(', '));
+  else if (name === 'sudo') say('vault is read-only. nothing here needs root.');
+  else if (name === 'exit' || name === 'q') say('close the window like everyone else.');
+  else { const r = resolveName(m[0]); if (r.node) goTo(r.node); else say('command not found: ' + esc(name) + '. try <b>help</b>'); }
+}
+cmd.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { const v = cmd.value; cmd.value = ''; run(v); }
+  else if (e.key === 'Escape') cmd.blur();
+  else if (e.key === 'Tab') {
+    const mm = /^(\S+\s+)(.*)$/.exec(cmd.value);
+    if (!mm) return;
+    const r = resolveName(mm[2]);
+    if (r.node) { e.preventDefault(); cmd.value = mm[1] + r.node.stem; }
+  }
+});
+cmd.addEventListener('focus', () => ($('mode').textContent = 'INSERT'));
+cmd.addEventListener('blur', () => ($('mode').textContent = 'NORMAL'));
+addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') { e.preventDefault(); palToggle(); return; }
+  if (pal.open || e.target === cmd || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === '/' || e.key === ':') { e.preventDefault(); cmd.focus(); }
+  else if (e.key === 'k' || e.key === 'ArrowDown') { e.preventDefault(); move(1); }    // k: down the wheel
+  else if (e.key === 'j' || e.key === 'ArrowUp') { e.preventDefault(); move(-1); }     // j: up the wheel
+  else if (e.key === 'l' || e.key === '.' || e.key === 'ArrowRight' || e.key === 'Enter') { if (document.activeElement && document.activeElement.tagName === 'BUTTON' && e.key === 'Enter') return; e.preventDefault(); enter(); }
+  else if (e.key === 'h' || e.key === ',' || e.key === 'ArrowLeft' || e.key === 'Backspace') { e.preventDefault(); goUp(); }
+  else if (e.key === 't') $('themeBtn').click();
+});
+
+// ---------- quick search (Cmd+K) ----------
+const pal = { open: false, q: '', items: [], sel: 0 };
+S.recent = []; S.loading = false;
+function pushRecent(n) { if (n && !n.virtual) S.recent = [n].concat(S.recent.filter((x) => x !== n)).slice(0, 12); }
+const kindOf = (n) => (n.root && n.site ? 'site' : n.dir ? 'folder' : n.site ? 'page' : n.ext || 'file');
+function placeOf(n) {
+  const parts = [];
+  for (let x = n.parent; x && !x.virtual; x = x.parent) parts.unshift(label(x).text.replace(/\/$/, ''));
+  return parts.join(' › ');
+}
+// Subsequence match with bonuses for a contiguous hit, the start of the string and word starts. -1 means no match.
+function fuzzy(q, t) {
+  const i = t.indexOf(q);
+  if (i >= 0) return 1000 - i * 2 - t.length * 0.2 + (i === 0 || ' -_/.—:('.includes(t[i - 1]) ? 150 : 0);
+  let ti = 0, sc = 0, last = -2, first = -1;
+  for (const c of q) {
+    const k = t.indexOf(c, ti);
+    if (k < 0) return -1;
+    if (first < 0) first = k;
+    sc += (k === last + 1 ? 8 : 1) + (k === 0 || ' -_/.—:('.includes(t[k - 1]) ? 5 : 0);
+    last = k; ti = k + 1;
+  }
+  return last - first + 1 <= q.length * 2 + 3 ? sc : -1;   // letters must sit close together, so typos match but scattered letters do not
+}
+function palCommands() {
+  const c = [
+    ['Go home', () => goTo(home())],
+    ['Go up one level', () => goUp()],
+    ['Reload folders', () => reloadAll()],
+    ['Toggle the site menu', () => run('sidebar')],
+    ['Next note', () => move(1)],
+    ['Previous note', () => move(-1)]
+  ];
+  SKINS.forEach((k) => c.push(['Theme: ' + k, () => setSkin(k)]));
+  const n = S.node;
+  if (n && n.ext === 'md') c.push(['Edit this note in Obsidian', () => native({ obsidian: { c: n.ci, rel: n.path } })]);
+  if (n && !n.virtual) c.push(['Reveal in Finder', () => native({ reveal: { c: n.ci, rel: n.path } })]);
+  return c.map(([title, fn]) => ({ cmd: true, title, fn }));
+}
+function palSearch(raw) {
+  const out = [];
+  const q = raw.trim();
+  if (q.startsWith('>')) {
+    const t = q.slice(1).trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return palCommands().map((c) => ({ c, s: t.reduce((a, w) => (a < 0 ? a : fuzzy(w, c.title.toLowerCase()) < 0 ? -1 : a + fuzzy(w, c.title.toLowerCase())), 0) }))
+      .filter((x) => x.s >= 0).sort((a, b) => b.s - a.s).map((x) => Object.assign(x.c, { sec: 'commands' }));
+  }
+  const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!tokens.length) {
+    S.recent.filter((n) => n !== S.node).forEach((n) => out.push({ node: n, sec: 'recent' }));
+    if (!out.length) out.push({ sec: 'recent', none: 'Nothing opened yet. Start typing to search every folder.' });
+    return out.concat(palCommands().slice(0, 4).map((c) => Object.assign(c, { sec: 'commands' })));
+  }
+  const scored = [];
+  for (const n of allNodes()) {
+    if (n.quiet) continue;
+    const l = label(n);
+    const hay = ((l.num ? l.num + ' ' : '') + l.text + ' ' + n.name).toLowerCase(), place = placeOf(n).toLowerCase();
+    let total = 0;
+    for (const t of tokens) {
+      const a = fuzzy(t, hay), b = fuzzy(t, place) * 0.3;
+      const best = Math.max(a, b);
+      if (best < 0) { total = -1; break; }
+      total += best;
+    }
+    if (total >= 0) scored.push([total + (isContainer(n) ? 0.5 : 0), n]);
+  }
+  scored.sort((a, b) => b[0] - a[0]);
+  const seen = new Set();
+  scored.slice(0, 40).forEach(([, n]) => { seen.add(n); out.push({ node: n, sec: 'notes' }); });
+  if (q.length >= 3 && S.all) {
+    let k = 0;
+    for (const [n, text] of S.all) {
+      if (seen.has(n)) continue;
+      const low = text.toLowerCase();
+      if (!tokens.every((t) => low.includes(t))) continue;
+      const at = low.indexOf(tokens[0]);
+      out.push({ node: n, sec: 'in the text', snippet: text.slice(Math.max(0, at - 28), at + 90).replace(/\[\[([^\]|]*)(?:\|([^\]]*))?\]\]?/g, (m, t, al) => al || t).replace(/[*_`#>|]+/g, ' ').replace(/\s+/g, ' ').trim() });
+      if (++k >= 12) break;
+    }
+  } else if (q.length >= 3 && !S.all) out.push({ sec: 'in the text', none: 'Indexing the text of every note…' });
+  const cm = palCommands().filter((c) => tokens.every((t) => fuzzy(t, c.title.toLowerCase()) >= 0)).slice(0, 4);
+  return out.concat(cm.map((c) => Object.assign(c, { sec: 'commands' })));
+}
+function palDraw() {
+  const ul = $('pall'), q = pal.q.trim().replace(/^>\s*/, '').toLowerCase().split(/\s+/)[0] || '';
+  ul.textContent = '';
+  let sec = null, idx = -1;
+  const mark = (txt) => {
+    const i = q ? txt.toLowerCase().indexOf(q) : -1;
+    return i < 0 ? esc(txt) : esc(txt.slice(0, i)) + '<mark>' + esc(txt.slice(i, i + q.length)) + '</mark>' + esc(txt.slice(i + q.length));
+  };
+  pal.items.forEach((it, k) => {
+    if (it.sec !== sec) { sec = it.sec; const h = document.createElement('li'); h.className = 'h'; h.textContent = sec; ul.appendChild(h); }
+    const li = document.createElement('li');
+    if (it.none) { li.className = 'none'; li.textContent = it.none; ul.appendChild(li); return; }
+    idx++;
+    li.dataset.k = k;
+    if (it.cmd) li.innerHTML = '<span class="k">cmd</span><span class="t">' + mark(it.title) + '</span>';
+    else {
+      const l = label(it.node), place = placeOf(it.node);
+      li.innerHTML = '<span class="k">' + esc(kindOf(it.node)) + '</span><span class="t">' + mark((l.num ? l.num + ' ' : '') + l.text.replace(/\/$/, '')) +
+        (place ? '<small>' + esc(place) + '</small>' : '') + '</span>' + (it.snippet ? '<span class="s">' + esc(it.snippet) + '</span>' : '');
+    }
+    if (k === pal.sel) li.classList.add('on');
+    li.addEventListener('mousemove', () => { if (pal.sel !== k) { pal.sel = k; palMarkSel(); } });
+    li.addEventListener('click', () => { pal.sel = k; palChoose(); });
+    ul.appendChild(li);
+  });
+  const on = ul.querySelector('li.on');
+  if (on) on.scrollIntoView({ block: 'nearest' });
+}
+function palMarkSel() {
+  $('pall').querySelectorAll('li[data-k]').forEach((li) => li.classList.toggle('on', +li.dataset.k === pal.sel));
+  const on = $('pall').querySelector('li.on');
+  if (on) on.scrollIntoView({ block: 'nearest' });
+}
+function palRefresh() {
+  pal.q = $('palq').value;
+  pal.items = palSearch(pal.q);
+  pal.sel = Math.max(0, pal.items.findIndex((i) => !i.none));
+  palDraw();
+}
+function palOpen() {
+  pal.open = true;
+  $('pal').hidden = false;
+  $('palq').value = '';
+  palRefresh();
+  $('palq').focus();
+  if (!S.all && !S.loading) {
+    S.loading = true;
+    loadAll().then(() => { S.loading = false; if (pal.open) palRefresh(); }).catch(() => { S.loading = false; });
+  }
+}
+function palClose() { pal.open = false; $('pal').hidden = true; $('palq').blur(); }
+function palToggle() { if (pal.open) palClose(); else palOpen(); }
+function palChoose() {
+  const it = pal.items[pal.sel];
+  if (!it || it.none) return;
+  palClose();
+  if (it.cmd) it.fn();
+  else { const n = (S.byPath[it.node.ci] && S.byPath[it.node.ci][it.node.path]) || it.node; goTo(n); }
+}
+$('palq').addEventListener('input', palRefresh);
+$('palq').addEventListener('keydown', (e) => {
+  const sel = pal.items.map((it, k) => (it.none ? -1 : k)).filter((k) => k >= 0);
+  const at = sel.indexOf(pal.sel);
+  if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) { e.preventDefault(); if (sel.length) { pal.sel = sel[(at + 1) % sel.length]; palMarkSel(); } }
+  else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) { e.preventDefault(); if (sel.length) { pal.sel = sel[(at - 1 + sel.length) % sel.length]; palMarkSel(); } }
+  else if (e.key === 'Enter') { e.preventDefault(); palChoose(); }
+  else if (e.key === 'Escape') { e.preventDefault(); palClose(); }
+});
+$('pal').addEventListener('mousedown', (e) => { if (e.target === $('pal')) palClose(); });
+window.vaultPalette = palToggle;
+
+// ---------- load, restore, watch ----------
+async function loadCollections() {
+  S.cols = await (await fetch('collections')).json();
+  S.roots = []; S.byPath = []; S.byName = []; S.all = null;
+  const raws = await Promise.all(S.cols.map((c, i) => fetch('index/' + i).then((r) => r.json()).catch(() => ({ children: [] }))));
+  for (let i = 0; i < raws.length; i++) { if (S.cols[i].site) await indexSite(i, raws[i]); else indexTree(i, raws[i]); }
+  linkRoots();
+  S.stamps = await Promise.all(S.cols.map((c, i) => fetch('stamp/' + i).then((r) => r.text()).catch(() => '')));
+}
+async function reloadAll() {
+  const keep = S.node && !S.node.virtual ? { c: S.node.ci, p: S.node.path } : null;
+  await loadCollections();
+  if (!S.cols.length || !home()) return showEmpty();
+  const n = keep && S.byPath[keep.c] && S.byPath[keep.c][keep.p];
+  goTo(n || home(), { quiet: true });
+}
+window.vaultReload = reloadAll;
+function showEmpty() {
+  S.container = { ci: 0, name: 'Vault', path: '', dir: true, children: [], parent: null, virtual: true, stem: 'Vault', num: null, ext: '' };
+  S.node = S.container; S.sel = 0;
+  tree.textContent = ''; wheelKey = '';
+  $('pane').innerHTML = promptLine('ls ~') + '<h1 class="doc-h">No folders yet</h1><p class="note">Use File › Add Folder… (⌘O) to pick a folder of notes. Markdown, PDFs, images and HTML all open here.</p>';
+  $('count').textContent = '';
+}
+setInterval(async () => {
+  if (document.visibilityState !== 'visible' || !S.cols.length) return;
+  try {
+    const now = await Promise.all(S.cols.map((c, i) => fetch('stamp/' + i).then((r) => r.text())));
+    if (now.some((s, i) => s !== S.stamps[i])) {
+      const was = S.node;
+      await reloadAll();
+      const cur = was && S.byPath[was.ci] && S.byPath[was.ci][was.path];
+      if (cur && cur.ext === 'md' && S.node === cur && cur.mtime !== was.mtime) openNode(cur, { quiet: true });
+    }
+  } catch (e) {}
+}, 2500);
+
+(async function boot() {
+  try {
+    await loadCollections();
+    if (!S.cols.length || !home()) return showEmpty();
+    let start = home(), quiet = false;
+    try {
+      const st = await (await fetch('state')).json();
+      const n = st && S.byPath[st.c] && S.byPath[st.c][st.path];
+      if (n) { start = n; quiet = true; }
+    } catch (e) {}
+    goTo(start, { quiet });
+  } catch (e) {
+    $('pane').innerHTML = promptLine('boot') + '<p class="note">Vault could not start: ' + esc(e.message) + '</p>';
+    native({ log: 'boot failed: ' + e.message });
+  }
+})();
+
+// ---------- hooks used by the self-test (VAULT_SELFTEST) ----------
+window.vaultTest = {
+  steps: [
+    ['home', 'cd ~'], ['calc', 'cd MA 16100'],
+    ['key-j-up', 'js:window.dispatchEvent(new KeyboardEvent("keydown", { key: "j" }))'],
+    ['key-k-down', 'js:window.dispatchEvent(new KeyboardEvent("keydown", { key: "k" }))'], ['math-note', 'cat L00'], ['math-note-2', 'cat L05'],
+    ['key-comma', 'js:window.dispatchEvent(new KeyboardEvent("keydown", { key: "," }))'],
+    ['key-period', 'js:window.dispatchEvent(new KeyboardEvent("keydown", { key: "." }))'],
+    ['chem', 'cd ~'], ['chem-folder', 'cd CHM 11520'], ['chem-note', 'cat Rec Worksheet'],
+    ['engr', 'cd ~'], ['engr-folder', 'cd ENGR 13100'], ['engr-excel', 'cd Excel'], ['engr-page', 'cat 3.2.1'],
+    ['grep-all', 'grep derivative'], ['home-again', 'cd ~'],
+    ['pal-open', 'js:window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }))'],
+    ['pal-type', 'js:(() => { const i = document.getElementById("palq"); i.value = "infinite lim"; i.dispatchEvent(new Event("input")); })()'],
+    ['pal-enter', 'js:document.getElementById("palq").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }))'],
+    ['pal-open2', 'js:window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }))'],
+    ['pal-text', 'js:(() => { const i = document.getElementById("palq"); i.value = "l\'hospital"; i.dispatchEvent(new Event("input")); })()'],
+    ['pal-cmd', 'js:(() => { const i = document.getElementById("palq"); i.value = ">theme em"; i.dispatchEvent(new Event("input")); })()'],
+    ['pal-close', 'js:document.getElementById("palq").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))']
+  ],
+
+
+  count() { return this.steps.length; },
+  async run(k) {
+    const s = this.steps[k];
+    if (s[1].startsWith('js:')) { try { new Function(s[1].slice(3))(); } catch (e) { errors.push(String(e)); } } else await run(s[1]);
+    await new Promise((r) => setTimeout(r, 2300));
+    return JSON.stringify(this.state(s[0]));
+  },
+  state(name) {
+    const n = S.node;
+    return { step: name, node: n ? pathOf(n) : null, container: S.container ? S.container.stem : null, sel: S.sel, cards: S.container ? cards(S.container).length : 0,
+      palette: { open: pal.open, q: pal.q, n: pal.items.filter((i) => !i.none).length, top: pal.items.filter((i) => !i.none).slice(0, 4).map((i) => (i.cmd ? '> ' + i.title : label(i.node).text + ' [' + i.sec + ']')) }, docChars: $('pane').textContent.length, katex: document.querySelectorAll('.katex').length, brokenImages: [...document.images].filter((i) => i.complete && i.naturalWidth === 0).length, images: document.images.length, wheelOn: (tree.querySelector('button.on') || {}).textContent || null, wheelButtons: tree.querySelectorAll('button').length, waiting: document.querySelectorAll('.wait').length, iframe: !!$('pane').querySelector('iframe'), paneHTML: $('pane').innerHTML.length, crumbs: $('crumbs').textContent, out: out.hidden ? '' : out.textContent.slice(0, 160), errors: errors.slice() };
+  },
+  async renderAll() {
+    const files = allNodes().filter((n) => n.ext === 'md');
+    let wiki = 0, missing = 0, relOk = 0, web = 0, failed = [];
+    const t0 = performance.now();
+    for (const n of files) {
+      try {
+        const r = VaultMD.render(await getText(n), ctxFor(n));
+        wiki += (r.html.match(/class="wl"/g) || []).length;
+        missing += (r.html.match(/class="wl missing"/g) || []).length;
+        relOk += (r.html.match(/data-p=/g) || []).length;
+        web += (r.html.match(/title="Opens the live course site"/g) || []).length;
+      } catch (e) { failed.push(n.path + ': ' + e.message); }
+    }
+    return JSON.stringify({ notes: files.length, totalFiles: allNodes().filter((n) => !n.dir).length, wikiResolved: wiki, missing, noteLinks: relOk, liveSiteLinks: web, failed, ms: Math.round(performance.now() - t0), errors });
+  }
+};
+})();
+</script>
+</body>
+</html>
